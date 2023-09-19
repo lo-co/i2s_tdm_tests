@@ -14,6 +14,7 @@
 #include "fsl_codec_adapter.h"
 #include <stdbool.h>
 #include "fsl_cs42448.h"
+#include <math.h>
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
@@ -31,8 +32,39 @@
 #define DEMO_CODEC_I2C_BASEADDR         I2C2
 #define DEMO_CODEC_I2C_INSTANCE         2U
 #define DEMO_TDM_DATA_START_POSITION    1U
-#define BUFFER_SIZE   (1024U)
+// Increase buffer size to accommodate adding sine into one channel
+#define CHANNEL_PAIRS (4U)
+#define SAMPLE_SIZE_MS (8)
+#define SAMPLE_PER_MS (48)
+#define BYTES_PER_SAMPLE (4)
+#define NUM_CHANNELS (8)
+#define BUFFER_SIZE   (SAMPLE_SIZE_MS * SAMPLE_PER_MS * BYTES_PER_SAMPLE * NUM_CHANNELS)
 #define BUFFER_NUMBER (4U)
+#define CONST_DATA (0xdeadbeef)
+#define M_PI 3.14159265358979323846
+
+// Adding macros to handle array alignment
+#if defined(__GNUC__) /* GNU Compiler */
+#ifndef __ALIGN_END
+#define __ALIGN_END __attribute__((aligned(4)))
+#endif
+#ifndef __ALIGN_BEGIN
+#define __ALIGN_BEGIN
+#endif
+#else
+#ifndef __ALIGN_END
+#define __ALIGN_END
+#endif
+#ifndef __ALIGN_BEGIN
+#if defined(__CC_ARM) || defined(__ARMCC_VERSION) /* ARM Compiler */
+#define __ALIGN_BEGIN __attribute__((aligned(4)))
+#elif defined(__ICCARM__) /* IAR Compiler */
+#define __ALIGN_BEGIN
+#endif
+#endif
+#endif
+
+
 /* demo audio sample rate */
 /*******************************************************************************
  * Prototypes
@@ -65,11 +97,46 @@ static i2s_dma_handle_t s_i2sTxHandle;
 static i2s_dma_handle_t s_i2sRxHandle;
 static dma_handle_t s_i2sTxDmaHandle;
 static dma_handle_t s_i2sRxDmaHandle;
+static i2s_transfer_t xfer;
+
+int32_t wave[48] = {0};
+
 /*******************************************************************************
  * Code
  ******************************************************************************/
+/** Generate a 1 kHz sine tone and store it in the variable wave. */
+static void generate_wave()
+{
+	// This is generating a shit wave but it works for the moment
+	// Volume is 1/4 max
+	int32_t max_vol = 536870912;
+
+	PRINTF("Generating wave now...\r\n");
+
+	for (uint8_t i = 0; i < 48; i++)
+	{
+		wave[i] = (int32_t)(max_vol * sin(2*M_PI /48*i));
+	}
+
+}
+
 static void i2s_rx_Callback(I2S_Type *base, i2s_dma_handle_t *handle, status_t completionStatus, void *userData)
 {
+	i2s_transfer_t i2s_data = *(i2s_transfer_t *)userData;
+
+	int32_t *new_data = (int32_t *)(i2s_data.data);
+
+	uint32_t num_elements = (SAMPLE_SIZE_MS * SAMPLE_PER_MS *  NUM_CHANNELS);
+	uint32_t wave_pos = 0;
+	uint32_t i = 0;
+
+	for (; i < num_elements;wave_pos++)
+	{
+		new_data[i++] = wave[wave_pos % 48];
+		new_data[i++] = wave[wave_pos % 48];
+		i+=6;
+	}
+
     emptyBlock--;
 }
 
@@ -83,7 +150,6 @@ static void i2s_tx_Callback(I2S_Type *base, i2s_dma_handle_t *handle, status_t c
  */
 int main(void)
 {
-    i2s_transfer_t xfer;
 
     BOARD_InitBootPins();
     BOARD_InitBootClocks();
@@ -167,11 +233,13 @@ int main(void)
     DMA_CreateHandle(&s_i2sTxDmaHandle, DEMO_DMA, DEMO_I2S_TX_CHANNEL);
     DMA_CreateHandle(&s_i2sRxDmaHandle, DEMO_DMA, DEMO_I2S_RX_CHANNEL);
 
+    void *usrData = (void *)&xfer;
     I2S_TxTransferCreateHandleDMA(DEMO_I2S_TX, &s_i2sTxHandle, &s_i2sTxDmaHandle, i2s_tx_Callback, NULL);
-    I2S_RxTransferCreateHandleDMA(DEMO_I2S_RX, &s_i2sRxHandle, &s_i2sRxDmaHandle, i2s_rx_Callback, NULL);
+    I2S_RxTransferCreateHandleDMA(DEMO_I2S_RX, &s_i2sRxHandle, &s_i2sRxDmaHandle, i2s_rx_Callback, usrData);
 
     /* codec initialization */
     DEMO_InitCodec();
+    generate_wave();
 
     PRINTF("Starting TDM record playback\n\r");
 
