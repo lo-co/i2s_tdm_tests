@@ -12,9 +12,11 @@
 #include "fsl_i2s_dma.h"
 #include "fsl_codec_common.h"
 #include "fsl_codec_adapter.h"
+#include "fsl_gpio.h"
 #include <stdbool.h>
 #include "fsl_cs42448.h"
 #include <math.h>
+#include <stdbool.h>
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
@@ -42,6 +44,10 @@
 #define BUFFER_NUMBER (4U)
 #define CONST_DATA (0xdeadbeef)
 #define M_PI 3.14159265358979323846
+
+// For SW2 functionality
+#define APP_GPIO_INTA_IRQHandler GPIO_INTA_DriverIRQHandler
+#define APP_SW_IRQ               GPIO_INTA_IRQn
 
 // Adding macros to handle array alignment
 #if defined(__GNUC__) /* GNU Compiler */
@@ -101,9 +107,37 @@ static i2s_transfer_t xfer;
 
 int32_t wave[48] = {0};
 
+bool g_interruptEnabled = false;
+
 /*******************************************************************************
  * Code
  ******************************************************************************/
+void APP_GPIO_INTA_IRQHandler(void)
+{
+    /* clear the interrupt status */
+    GPIO_PinClearInterruptFlag(SW2_GPIO, SW2_PORT, SW2_PIN, 0);
+    /* Change state of switch. */
+    g_interruptEnabled = true;
+    SDK_ISR_EXIT_BARRIER;
+}
+
+static void enable_sw_interrupt()
+{
+    gpio_interrupt_config_t config = {kGPIO_PinIntEnableEdge, kGPIO_PinIntEnableLowOrFall};
+
+    EnableIRQ(APP_SW_IRQ);
+    gpio_pin_config_t SW2_config = {
+        .pinDirection = kGPIO_DigitalInput,
+        .outputLogic = 0U
+    };
+    /* Initialize GPIO functionality on pin PIO0_10 (pin J3)  */
+    // Ugh...config tool does a half ass job of this
+    GPIO_PortInit(SW2_GPIO, SW2_PORT);
+//    GPIO_PinInit(SW2_GPIO, SW2_PORT, SW2_PIN, &SW2_config);
+    GPIO_SetPinInterruptConfig(SW2_GPIO, SW2_PORT, SW2_PIN, &config);
+    GPIO_PinEnableInterrupt(SW2_GPIO, SW2_PORT, SW2_PIN, 0);
+}
+
 /** Generate a 1 kHz sine tone and store it in the variable wave. */
 static void generate_wave()
 {
@@ -154,6 +188,8 @@ int main(void)
     BOARD_InitBootPins();
     BOARD_InitBootClocks();
     BOARD_InitDebugConsole();
+	PinsFunc_InitSw2();
+
 
     CLOCK_EnableClock(kCLOCK_InputMux);
 
@@ -177,6 +213,10 @@ int main(void)
 
     cs42448Config.i2cConfig.codecI2CSourceClock = CLOCK_GetFlexCommClkFreq(2);
     cs42448Config.format.mclk_HZ                = CLOCK_GetMclkClkFreq();
+
+
+	enable_sw_interrupt();
+
 
     PRINTF("I2S TDM record playback example started!\n\r");
 
@@ -270,6 +310,12 @@ int main(void)
             {
                 tx_index = 0U;
             }
+        }
+
+        if (g_interruptEnabled)
+        {
+        	PRINTF("Interrupt enabled\r\n");
+        	g_interruptEnabled = false;
         }
     }
 }
